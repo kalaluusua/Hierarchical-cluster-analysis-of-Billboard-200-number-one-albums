@@ -1,0 +1,498 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+# install.packages("RSQLite")
+# install.packages("DBI")
+# install.packages("odbc")
+library(RSQLite)
+library(DBI)
+library(odbc)
+
+
+con <- dbConnect(RSQLite::SQLite(), "billboard-200.db")
+dbListTables(con)
+albums <- dbGetQuery(con, "SELECT * FROM albums WHERE rank == '1'")
+acoustic <- dbGetQuery(con, "SELECT * FROM acoustic_features WHERE album IN 
+                                (SELECT album FROM albums WHERE rank == '1')")
+dbDisconnect(con)
+
+AL <- subset(albums, select=-c(rank))
+AC <- subset(acoustic, select=-c(album_id))
+
+str(AL)
+str(AC)
+
+# No duplicate songs in acoustic features
+# sum(duplicated(AC$id)) == 0
+
+```
+
+```{r}
+X_cont <- subset(AC, select=-c(id, song, album, artist, date, mode, key, time_signature))
+X <- subset(AC, select=-c(id, song, album, artist, date))
+X.scaled <- data.frame(scale(X, center = T, scale = T))
+```
+
+```{r}
+# install.packages("ggridges")
+# install.packages("ggjoy")
+library(ggjoy)
+library(ggplot2)
+library(ggridges)
+
+col0="#888178"
+alpha=0.3
+acol= "black"
+
+X.vals <- c(unlist(X.scaled))
+X.names <- rep(colnames(X.scaled),times=rep(length(X.scaled[,1]),length(X.scaled[1,])))
+X.hist <- data.frame(X.vals,X.names)
+X.hist$names<-rev(factor(rev(X.hist$X.names),levels=rev(unique(X.hist$X.names))))
+
+
+pdf(file = "ridges.pdf",   # The directory you want to save the file in
+    width = 8.27, # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+
+ggplot(X.hist, aes(x = X.vals, y = X.names, height = ..density..)) +
+  geom_density_ridges(aes(point_color = names, point_shape=names),
+                      jittered_points=T,point_size=0.00001,alpha=0,
+                      rel_min_height=0.00001,point_alpha=rep(c(0.05,rep(0,9)),length.out = 196546)) +
+  scale_discrete_manual(aesthetics = "point_color", values = rep(acol,20)) +
+  scale_discrete_manual(aesthetics = "point_shape", values = rep(20,20))+
+  scale_y_discrete(expand = c(0, 0)) +
+  scale_x_continuous(limits=c(min(X.scaled),20),expand = c(0.0, 0)) +
+  # scale_fill_brewer(palette = 4) +
+  theme_ridges(grid = F,center_axis_labels = T) + 
+  theme(legend.position = "none",axis.ticks.x = element_blank()) +
+  labs(x="Value",y="Variable")
+
+
+dev.off()
+```
+
+
+```{r}
+library(hexbin)
+
+pdf(file = "hexplom.pdf",   # The directory you want to save the file in
+    width = 8.3, # The width of the plot in inches
+    height = 11.7) # The height of the plot in inches
+
+hexplom(X_cont, upper.panel = NULL, axis.line.tck = 0, axis.text.cex =0, varname.cex =.6, 
+        par.settings = list(axis.line = list(col = 0)),
+        xlab = "Hexagonal binned pairwise scatter plots of the continuous variables")
+
+dev.off()
+```
+
+```{r}
+
+# mat : is a matrix of data
+# ... : further arguments to pass to the native R cor.test function
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], method="spearman", ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+# p.mat <- cor.mtest(X.scaled)
+
+# heatmap(cor(X, method="spearman"), Rowv = NA, Colv = NA, symm = T, col = colorRampPalette(c('red','white','blue'))(50))
+
+# install.packages("corrplot")
+library(corrplot)
+
+X.cor <- cor(X.scaled, method="spearman")
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+pdf(file = "cor.pdf",   # The directory you want to save the file in
+    width = 8.27, # The width of the plot in inches
+    height = 5.83) # The height of the plot in inches
+corrplot(X.cor, 
+         method="color", col=col(200),
+         number.cex=0.75, tl.cex = .8,
+         type="lower", order="FPC",
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = p.mat, sig.level = 0.01, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+
+dev.off()
+```
+
+```{r}
+X.PCA <- princomp(X,cor=TRUE)
+summary(X.PCA)
+```
+
+```{r}
+plot(cumsum(X.PCA$sdev^2 / sum(X.PCA$sdev^2)), type = 'b', pch = 21, lty = 3, bg = 2, cex = 1.5, ylim = c(0,1),
+     xlab = 'Principal component', ylab = 'Cumulative proportion of variance explained', xaxt = 'n', yaxt = 'n')
+axis(1, at = 1:13, tck = 0.025)
+axis(2, at = 0:13 / 10, tck = 0.025, las = 2)
+abline(0,1/13, lty = 3)
+
+```
+
+```{r}
+pdf(file = "PCA.pdf",   # The directory you want to save the file in
+    width = 5.83, # The width of the plot in inches
+    height = 4.13) # The height of the plot in inches
+plot(hexbin(X.PCA$scores[,1], X.PCA$scores[,2]), xlab = "1st PC", ylab = "2nd PC", lcex=0.75)
+dev.off()
+print(t(round(X.PCA$loadings[,1:2],2)))
+
+par(mar = c(6,3,1,1))
+barplot(X.PCA$loadings[,1], border=F, width=c(.35), space=1.8, las=2, cex.names=.7)
+barplot(X.PCA$loadings[,2], border=F, width=c(.35), space=1.8, las=2, cex.names=.7)
+# barplot(X.PCA$loadings[,3], border=F, width=c(.35), space=1.8, las=2, cex.names=.7)
+# barplot(X.PCA$loadings[,4], border=F, width=c(.35), space=1.8, las=2, cex.names=.7)
+
+write.csv(t(round(X.PCA$loadings[,1:2],2)), "loadings.csv", row.names = T)
+
+```
+
+Hierarchical clustering:
+
+Ward's method finds clusters with minimum within-cluster variance, and maximum between-cluster variance.
+
+```{r}
+## Euclidean distance on raw data
+
+d0 <- dist(X)
+h0 <- hclust(d0, method = "ward.D2")
+plot(h0)
+```
+```{r}
+## Euclidean distance on centered and scaled data
+d1 <- dist(scale(X, center = T, scale = T))
+h1 <- hclust(d1, method = "ward.D2")
+# plot(h1)
+```
+
+
+We consider Dunn's index, which shows the variation of error with the number of clusters (k). Dunn's index is the ratio between the minimum inter-cluster distances to the maximum intra-cluster diameter. The diameter of a cluster is the distance between its two furthermost points. In order to have well separated and compact clusters we aim for a higher Dunn's index.
+
+
+```{r}
+# install.packages("clValid")
+library(clValid)
+
+# dunns <- c()
+# 
+# for (k in c(3, 15, 17, 18, 19)) { # number of clusters
+#   print(c("k: ", k))
+#   clusters <- cutree(h1, k)
+#   di <- dunn(d1, clusters)
+#   dunns[k] <- di
+# }
+
+
+
+plotdi <- function(xy,cl=class,main="",xlab="x",ylab="y",textp=TRUE) {
+
+  par(xpd=F) # this is the default value
+  plot(c(1.8,21),c(0.015,0.025),bty="n",xaxt="n",yaxt="n",xlab="k",ylab="Dunn index",type="n",
+       xaxs="i",yaxs="i",main=main)
+  axis(2,pos=1,lwd=1.5,at=3:5*0.005)
+  axis(1,lwd=1.5, at=2*c(1:10), labels= 2*c(1:10))  
+
+
+  
+  lines(1:length(xy),xy,type="b",col="black")
+
+}
+
+pdf(file = "di.pdf",   # The directory you want to save the file in
+    width = 5.83, # The width of the plot in inches
+    height = 4.13) # The height of the plot in inches
+plotdi(dunns)
+dev.off()
+```
+
+```{r}
+library(tidyverse)
+library(dendextend)
+library(RColorBrewer)
+k <- 10
+
+g <- gray.colors(2, start = 0, end =.6, gamma = 2.2, rev = F)
+
+cols <- rep(g,k/2)
+
+# h1 %>% as.dendrogram() -> dend.ward
+
+pdf(file = "hierarchical10.pdf",   # The directory you want to save the file in
+    width = 8.27, # The width of the plot in inches
+    height = 5.83) # The height of the plot in inches
+
+# Make the dendrogram
+# par(mar=c(10,5,1,1))
+dend.ward %>%
+  highlight_branches_lwd %>%
+  set("labels_col", "white") %>%
+  color_branches(k = k, col = cols, groupLabels = TRUE) %>%
+  plot(axes=TRUE,xlab = "Clusters (Ward's method)", ylab = 'Tree height [Euclidian distance]', labels = NULL)
+
+dev.off
+```
+
+```{r}
+# In cluster analysis, one further way to analyse / validate the consistency 
+# of the clusters, without an expert opinion, is so-called silhouette plot. For reference, see
+# Rousseeuw, P.J. (1987) Silhouettes: "A graphical aid to the interpretation and 
+# validation of cluster analysis". J. Comput. Appl. Math., 20, 53-65. (Google Scholar finds this)
+# For a starting point and using the same data as we used here:
+library(cluster)
+# k clusters:
+# 
+# silhouette.means <- c()
+# 
+# for (k in 2:2) {
+#   print(c("k: ", k))
+#   clusters <- cutree(h1, k)
+#   X.silhouette <- silhouette(clusters, d1)
+#   silhouette.means[k] <- unlist(summary(X.silhouette, FUN = mean)[4])
+# }
+
+
+plotsm <- function(xy,cl=class,main="",xlab="x",ylab="",textp=TRUE) {
+  par(xpd=F) # this is the default value
+  plot(c(1.8,21),c(0.04,0.20),bty="n",xaxt="n",yaxt="n",xlab="k",ylab="Average silhouette width",type="n",
+       xaxs="i",yaxs="i",main=main)
+  axis(2,pos=1,lwd=1.5,at=1:4*0.05)
+  axis(1,lwd=1.5, at=2*c(1:10), labels= 2*c(1:10))  
+
+
+  
+  lines(1:length(xy),xy,type="b",col="black")
+
+}
+
+pdf(file = "sm.pdf",   # The directory you want to save the file in
+    width = 5.83, # The width of the plot in inches
+    height = 4.13) # The height of the plot in inches
+plotsm(silhouette.means)
+dev.off()
+
+```
+
+```{r}
+# Interpretation in the nutshell:
+# The silhouette width ranges from -1 to 1. The higher the number, the better the point(s)
+# associates with its cluster and worse to other clusters. Values below zero suggests that
+# the points is better associated with some other cluster. Note the few outliers in the silhoutte plot above (few observations have negative width)
+# Please see the reference above for more formal definition.
+
+clusters <- kmeans(X.scaled, centers = 12)
+X.silhouette <- silhouette(clusters$cluster, d1)
+
+
+
+pdf(file = "silhouette_kmeans.pdf",   # The directory you want to save the file in
+    # height = 5.83, # The width of the plot in inches
+    # width = 8.27) # The height of the plot in inches
+    width = 8.3, # The width of the plot in inches
+    height = 11.7) # The height of the plot in inches
+
+plot(X.silhouette)
+# The average silhouette width:
+abline(v = 0.08, lty = 3, col = 3)
+
+dev.off()
+```
+
+```{r}
+clust.cutree <- dendextend:::cutree(dend.ward, k=12, order_clusters_as_data = FALSE)
+clusters <- clust.cutree
+
+h1.means <- aggregate(. ~ clusters, X.scaled, mean)[,-1]
+h1.sizes <- table(clusters)
+h1.covs <- lapply(unique(clusters),
+                   function(x)cov(X.scaled[clusters==x, ],
+                                  use="na.or.complete"))
+
+# for (i in 1:k) {
+#   heatmap(h1.covs[[i]], Rowv = NA, Colv = NA, symm = T, col = colorRampPalette(c('red','white','blue'))(50))
+# }
+
+supersetmean <- function(a.size, a.mean, b.size, b.mean) {
+  mu <- (a.size*a.mean + b.size*b.mean) / (a.size + b.size)
+  return (mu)
+}
+
+h1.mean.23 <- supersetmean(h1.sizes[2], h1.means[2,], h1.sizes[3], h1.means[3,])
+h1.size.23 <-  h1.sizes[2] +  h1.sizes[3]
+
+h1.mean.45 <- supersetmean(h1.sizes[4], h1.means[4,], h1.sizes[5], h1.means[5,])
+h1.size.45 <-  h1.sizes[4] +  h1.sizes[5]
+
+h1.mean.67 <- supersetmean(h1.sizes[6], h1.means[6,], h1.sizes[7], h1.means[7,])
+h1.size.67 <-  h1.sizes[6] +  h1.sizes[7]
+
+h1.mean.89 <- supersetmean(h1.sizes[8], h1.means[8,], h1.sizes[9], h1.means[9,])
+h1.size.89 <-  h1.sizes[8] +  h1.sizes[9]
+
+h1.mean.B10 <- supersetmean(h1.sizes[11], h1.means[11,], h1.sizes[12], h1.means[12,])
+h1.size.B10 <-  h1.sizes[11] +  h1.sizes[12]
+
+###
+
+h1.mean.123 <- supersetmean(h1.sizes[1], h1.means[1,], h1.size.23, h1.mean.23)
+h1.size.123 <-  h1.sizes[1] +  h1.size.23
+
+h1.mean.4567 <- supersetmean(h1.size.45, h1.mean.45, h1.size.67, h1.mean.67)
+h1.size.4567 <-  h1.size.45 +  h1.size.67
+
+h1.mean.AB10 <- supersetmean(h1.sizes[10], h1.means[10,], h1.size.B10, h1.mean.B10)
+h1.size.AB10 <-  h1.sizes[10] +  h1.size.B10
+
+###
+
+h1.mean.1234567 <- supersetmean(h1.size.123, h1.mean.123, h1.size.4567, h1.mean.4567)
+h1.size.1234567 <-  h1.size.123 +  h1.size.4567
+
+h1.mean.89AB10 <- supersetmean(h1.size.89, h1.mean.89, h1.size.AB10, h1.mean.AB10)
+h1.size.89AB10 <-  h1.size.89 +  h1.size.AB10
+
+###
+
+# mean == 0, size == nrow(X)
+h1.mean.123456789AB10 <- supersetmean(h1.size.1234567, h1.mean.1234567, h1.size.89AB10, h1.mean.89AB10)
+h1.size.123456789AB10 <-  h1.size.1234567 +  h1.size.89AB10
+
+
+```
+
+```{r}
+
+c1 <- h1.means[1,]
+c2 <- h1.means[2,]
+c3 <- h1.means[3,]
+c4 <- h1.mean.45
+c5 <- h1.mean.67
+c6 <- h1.means[8,]
+c7 <- h1.means[9,]
+c8 <- h1.means[10,]
+c9 <- h1.means[11,]
+c10 <- h1.means[12,]
+
+c23 <- h1.mean.23
+c123 <- h1.mean.123
+c45 <- h1.mean.4567
+c67 <- h1.mean.89
+c910 <- h1.mean.B10
+c8910 <- h1.mean.AB10
+c678910 <- h1.mean.89AB10
+c12345 <- h1.mean.1234567
+
+c <- dendextend:::cutree(dend.ward, k=10, order_clusters_as_data = FALSE)
+sort(-table(c))
+```
+
+
+```{r}
+bp_diff <- function(a, b) {
+  d <- as.matrix(a - b)/sqrt(sum((a-b)^2))
+  colnames(d) <- colnames(X)
+  par(mar = c(6,3,1,1))
+  barplot(d, border=F, width=c(.35), space=1.8, las=2, cex.names=.7, horiz=F)
+  abline(v=0, col="gray", lwd=2)
+
+}
+
+diff <- function(a, b) {
+  res <- (round(as.matrix(a - b)/sqrt(sum((a-b)^2)),2))
+  colnames(res) <- c("aco.",	"dan.",	"dur.",	"ene.",	"ins.",	"key",	"liv.",	"lou.",	"mod.",	"spe.",	"tem.",	"tim.",	"val.")
+  return (res)
+}
+
+# heatmap(cor(X, method="spearman"), Rowv = NA, Colv = NA, symm = T, col = colorRampPalette(c('red','white','blue'))(50))
+
+# 1
+bp_diff(c12345, c678910)
+
+# 2
+bp_diff(c123, c45)
+
+bp_diff(c67, c8910)
+# write.csv(diff(c67, c8910), "diff", row.names = F)
+
+# 3
+bp_diff(c1, c23)
+bp_diff(c4, c5)
+bp_diff(c6, c7)
+bp_diff(c8, c910)
+# 4
+bp_diff(c2,c3)
+bp_diff(c9,c10)
+```
+
+
+
+```{r}
+dates <- as.Date(AC$date)
+dt <- dates[c %in% c(8)]
+dq <- quantile(as.integer(dt), na.rm = T)
+class(dq)="Date"
+dq
+
+```
+
+
+```{r}
+dates <- as.Date(AC$date)
+dt <- dates[c %in% c(8)]
+dq <- quantile(as.integer(dt), na.rm = T)
+class(dq)="Date"
+dq
+
+```
+
+
+```{r}
+dates <- as.Date(AC$date)
+dt <- dates[c %in% c(6,7,8,9,10)]
+dq <- quantile(as.integer(dt), na.rm = T)
+class(dq)="Date"
+dq
+
+```
+
+```{r}
+pdf(file = "splomclust.pdf",   # The directory you want to save the file in
+    width = 8.3, # The width of the plot in inches
+    height = 11.7) # The height of the plot in inches
+
+ind <- sample(1:nrow(X), 1000, replace = F)
+pairs(X[ind,], upper.panel = NULL, col = cols[clusters[ind]])
+
+dev.off()
+```
+
+```{r}
+h2 %>% as.dendrogram() -> dend.avg
+
+Bk_plot(dend.avg, dend.ward, k = 2:50, xlim = c(2,50))
+```
+
+
