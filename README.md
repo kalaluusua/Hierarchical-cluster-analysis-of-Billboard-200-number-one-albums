@@ -13,3 +13,6 @@ We apply Ward error sum of squares hierarchical clustering method and use Dunn i
 and average silhouette width to determine an optimal number of clusters. The method
 produces a dendrogram partitioning the data into clusters, which we interpret
 by inspecting normalized differences of cluster centroids.
+
+## Data
+Andrew Thompson. Acoustic and meta features of albums and songs on the bill-board 200. https://components.one/datasets/billboard-200/, apr 2019.
